@@ -9,4 +9,4 @@ while True:
         check.main()
     except Exception as e:
         print(f"⚠️ Lỗi: {e}")
-    time.sleep(360)
+    time.sleep(120)
