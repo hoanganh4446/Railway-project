@@ -24,7 +24,7 @@ def handle_pause(record, now, paused_total):
         if not paused_start_str:  # Only set Paused Start Time if it is None
             update_payload['Paused Start Time'] = now.isoformat()
         if status != 'Tạm dừng':  # Only update status if it's not already paused
-            update_payload['Status'] = 'Tạm dừng'
+            update_payload['Status'] = 'Pause'
 
     elif not is_paused and paused_start:
         # Calculate the total paused time and reset the pause
@@ -35,7 +35,7 @@ def handle_pause(record, now, paused_total):
             'Total Pause Time (hours)': paused_total,
             'Paused Start Time': None,
             'Last Resume Time': now.isoformat(),
-            'Status': 'In progress'  # Resume status
+            'Status': 'Running'  # Resume status
         })
 
     return update_payload, paused_total
@@ -68,7 +68,7 @@ def process_device(record, now):
     pause_updates, paused_total = handle_pause(fields, now, paused_total)
     update_payload.update(pause_updates)
 
-    if fields.get("Is Paused") and status != "AP Testing":
+    if fields.get("Is Paused") and status != "Pause":
         # Only update the Airtable if it's a pause status change
         if update_payload:
             airtable.update_record(record['id'], update_payload)
@@ -80,18 +80,27 @@ def process_device(record, now):
         update_payload['Running Time (hours)'] = running_time
 
     test_interval = fields.get('Test Interval (hours)', 100)  # Ensure it's set if missing
-    next_test = running_time + test_interval  # Next Test = Running Time + Test Interval
-    remaining_test = round(next_test - running_time, 2)
-    test_time = start_time + datetime.timedelta(hours=next_test + paused_total)
-    update_payload['Next Test (hours)'] = next_test
+    last_tested_at = fields.get('Last Tested At (hours)', 0) # Get Last Tested At, default to 0
+
+    # Tính toán next_test theo giờ
+    next_test_hours = round(paused_total + last_tested_at + test_interval, 2)
+
+    # Chuyển đổi next_test_hours thành đối tượng datetime
+    # test_time là thời điểm thực tế cần kiểm tra tiếp theo
+    test_time = start_time + datetime.timedelta(hours=next_test_hours)
+
+    # Định dạng test_time thành chuỗi để lưu vào trường Single line text
+    update_payload['Next Test (hours)'] = test_time.strftime('%Y-%m-%d %H:%M:%S')
+
+    remaining_test = round(next_test_hours - running_time, 2)
 
     if remaining_test <= 0:
         if not fields.get("Is Paused"):  # Mark the device as paused if needed
             update_payload.update({
                 'Is Paused': True,
                 'Paused Start Time': now.isoformat(),
-                'Last Tested At (hours)': running_time,
-                'Status': 'Tạm dừng'
+                'Last Tested At (hours)': running_time, # Update Last Tested At when pausing due to test completion
+                'Status': 'Pause'
             })
 
     # Calculate the Expected End based on Total Pause Time and Target Time
@@ -99,21 +108,24 @@ def process_device(record, now):
     update_payload['Expected End'] = expected_end.isoformat()
 
     print(f"--- Thiết bị: {device_id} ---")
-    print(f"Location:      {fields.get('Location', 'Unknown')}")
-    print(f"Status:        {status}")
-    print(f"Start:         {start_time.strftime('%Y-%m-%d %H:%M:%S%z')}")
-    print(f"Now:           {now.strftime('%Y-%m-%d %H:%M:%S%z')}")
-    print(f"Paused total:  {paused_total:.2f} giờ")
-    print(f"Running:       {running_time:.2f} giờ")
-    print(f"Target:        {fields.get('Target Time (hours)', 100)} giờ")
-    print(f"Next Test:     {next_test:.2f} giờ")
-    print(f"Remaining:     {remaining_test:.2f} giờ")
-    print(f"Expected End:  {expected_end.strftime('%Y-%m-%d %H:%M:%S%z')}")
+    print(f"Location:        {fields.get('Location', 'Unknown')}")
+    print(f"Status:          {status}")
+    print(f"Start:           {start_time.strftime('%Y-%m-%d %H:%M:%S%z')}")
+    print(f"Now:             {now.strftime('%Y-%m-%d %H:%M:%S%z')}")
+    print(f"Paused total:    {paused_total:.2f} giờ")
+    print(f"Running:         {running_time:.2f} giờ")
+    print(f"Target:          {fields.get('Target Time (hours)', 100)} giờ")
+    print(f"Last Tested At:  {last_tested_at:.2f} giờ")
+    print(f"Test Interval:   {test_interval:.2f} giờ")
+    print(f"Next Test Time:  {test_time.strftime('%Y-%m-%d %H:%M:%S')}") # In ra định dạng mới
+    print(f"Remaining:       {remaining_test:.2f} giờ")
+    print(f"Expected End:    {expected_end.strftime('%Y-%m-%d %H:%M:%S%z')}")
+
 
     # Send warning if applicable
     hours, label = should_send_warning(remaining_test)
     if label:
-        telegram.notify_device(device_id, next_test, test_time, label)
+        telegram.notify_device(device_id, next_test_hours, test_time, label) # Truyền next_test_hours cho Telegram
 
     # Update Airtable with any changes
     if update_payload:
